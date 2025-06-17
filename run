@@ -271,8 +271,8 @@ gpg_check() {
 
 copy_to_clipboard() {
   credential="$1"
-  command -v wl-copy >/dev/null 2>&1 && wl-copy $credential
-  command -v xclip >/dev/null 2>&1 && xclip -i $credential
+  command -v wl-copy >/dev/null 2>&1 && wl-copy $credential && return 
+  command -v xclip >/dev/null 2>&1 && echo -n "$credential" | xclip -selection clipboard # need to ensure this works at some point 
 }
 
 if [ $# -eq 0 ]; then # Fallback to help if no flag was provided
