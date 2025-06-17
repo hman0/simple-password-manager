@@ -1,0 +1,306 @@
+#!/bin/sh
+
+delim="$(printf '\037')"
+
+help() {
+  echo "Commands:"
+  echo "  -h, --help    show help"
+  echo "  -n, --new     create a new file, then encrypt it"
+  echo "  -e, --edit    edit existing credentials"
+  echo "  -a, --append  append new credentials"
+  echo "  -r, --read    echo credentials to terminal and clipboard"
+  echo "  -d, --delete  delete specific credentials"
+}
+
+new() {
+  gpg_check
+  printf "Input filename\n> "
+  read filename
+  filename="${filename%.*}" # remove any existing file extension the user may have inputted
+  touch $filename
+  echo "Created $filename"
+  echo "Add initial credentials? (Y/n)"
+  while true; do
+    printf "> "
+    read credentials_choice
+    case "$credentials_choice" 
+      in [Yy]|[Yy][Ee][Ss]|"")
+        add_credential
+      break
+      ;; [Nn]|[Nn][Oo]) 
+      echo "Skipping credentials..."
+      break
+      ;; *)
+      echo "Please input Y or N"
+      ;;
+    esac  
+  done
+  encrypt
+}
+
+read_file() {
+  gpg_check
+  decrypt
+  echo "Option 1: Echo specific credentials (default)"
+  echo "Option 2: Echo entire file"
+  while true; do 
+    printf "> "
+    read option 
+    case "$option"
+      in [1]|"")
+      declare -a fields
+      select_credential
+      if [ ${fields[1]} -eq 1 ]; then
+        echo "Username: ${fields[2]}"
+        echo "Password: ${fields[3]}"
+        copy_to_clipboard "${fields[3]}"
+      elif [ ${fields[1]} -eq 2 ]; then
+        echo "Token: ${fields[2]}"
+        copy_to_clipboard "${fields[2]}"
+      fi
+      break
+      ;; [2])
+      echo "$filename decrypted contents:"
+      cat "$decrypted"
+      break
+      ;; *)
+      echo "Please input 1 or 2"
+    esac
+  done
+  echo "-----------------------------------"
+  echo "Press Return once you are finished"
+  read -s
+  shred $decrypted && rm $decrypted
+  echo "Securely deleted decrypted $filename"
+}
+
+append() {
+  gpg_check
+  decrypt
+  filename=$decrypted
+  add_credential
+  filename="${filename%.gpg}" 
+  encrypt
+}
+
+edit() {
+  gpg_check
+  decrypt
+  declare -a fields
+  select_credential
+  if [ ${fields[1]} -eq 1 ]; then
+    echo "Username: ${fields[2]}"
+    echo "Password: ${fields[3]}"
+    change_credential "${fields[2]}" false "Change username? (y/N)"
+    fields[2]="$result"
+    change_credential "${fields[3]}" true "Change password? (y/N)"
+    fields[3]="$result"
+  elif [ ${fields[1]} -eq 2 ]; then
+    echo "Token": ${fields[2]}
+    change_credential "${fields[2]}" true "Change token? (y/N)"
+    fields[2]="$result"
+  fi
+  
+  line_number=$(awk -F"$delim" -v sel="${fields[0]}" '$1 == sel {print NR; exit}' "$decrypted")
+  
+  if [ ${fields[1]} -eq 1 ]; then
+    new_line="${fields[0]}$delim${fields[1]}$delim${fields[2]}$delim${fields[3]}$delim"
+  elif [ ${fields[1]} -eq 2 ]; then
+    new_line="${fields[0]}$delim${fields[1]}$delim${fields[2]}$delim"
+  fi
+
+  sed -i "${line_number}s/.*/$new_line/" "$decrypted"
+  filename="${decrypted}"
+  encrypt
+}
+
+delete() {
+  gpg_check
+  decrypt
+  declare -a fields
+  select_credential
+  if [ ${fields[1]} -eq 1 ]; then
+    echo "Username: ${fields[2]}"
+    echo "Password: ${fields[3]}"
+  elif [ ${fields[1]} -eq 2 ]; then
+    echo "Token": ${fields[2]}
+  fi
+  echo "-----------------------------------"
+  printf "Press Return to confirm deletion"
+  read -s
+  line_number=$(awk -F"$delim" -v sel="${fields[0]}" '$1 == sel {print NR; exit}' "$decrypted")
+  sed -i "${line_number}d" $decrypted
+  filename="${decrypted}"
+  encrypt
+}
+
+add_credential() {
+  printf "Input service name (i.e. github, protonmail etc.)\n> "
+  read name
+  while [ -z "$name" ]; do # Ensure string is not empty 
+    printf "> "
+    read name
+  done
+
+  if [ -f "$filename" ] && grep -q "^$name$delim" "$filename"; then
+    echo "Service '$name' already exists"
+    exit
+  fi
+
+  echo "Option 1: Username & Password (default)"
+  echo "Option 2: Personal Access Token"
+  while true; do 
+    printf "> "
+    read option 
+    case "$option"
+      in [1]|"")
+      if [ option == "" ]; then 
+        option=1
+      fi
+      printf "Input username\n> "
+      read username
+      printf "Input password (will not echo)\n> "
+      read -s password
+      printf "$name$delim$option$delim$username$delim$password$delim\n" >> $filename
+      printf "\nEchoed credentials to $filename\n"
+      break
+      ;; [2])
+      printf "Input Personal Access Token (will not echo)\n> " 
+      read -s token
+      printf "$name$delim$option$delim$token$delim\n" >> $filename
+      printf "\nEchoed credentials to $filename\n"
+      break
+      ;; *)
+      echo "Please input 1 or 2"
+    esac
+  done
+}
+
+select_credential() {
+  if [ $(wc -l < "$decrypted") -gt 1 ]; then 
+    echo "Please select from this list"
+    awk -F"$delim" '{printf "%s ", $1}' "$decrypted"; echo
+    printf "> "
+    read selection
+    while ! grep -q "^$selection$delim" "$decrypted"; do  
+      printf "> "
+      read selection
+    done
+  else 
+    selection="$(awk -F'$delim' '{printf "%s", $1}' "$decrypted")" 
+  fi
+
+  line_number=$(awk -F"$delim" -v sel="$selection" '$1 == sel {print NR; exit}' "$decrypted")
+  line=$(sed -n "${line_number}p" $decrypted)
+  readarray -d "$delim" -t fields <<< "$line"
+}
+
+change_credential() {
+  credential="$1"
+  sensitive_data="$2"
+  prompt="$3"
+  
+  echo "$prompt"
+  while true; do
+    printf "> "
+    read credentials_choice
+    case "$credentials_choice" 
+      in [Yy]|[Yy][Ee][Ss])
+        if [ $sensitive_data == true ]; then
+          printf "Input replacement (will not echo)\n> "
+          read -s replacement
+        elif [ $sensitive_data == false ]; then
+          printf "Input replacement\n> "
+          read replacement
+        fi
+        result="$replacement"
+        break
+        ;; [Nn]|[Nn][Oo]|"") 
+        result="$credential"
+        break
+        ;; *)
+        echo "Please input Y or N"
+        ;;
+    esac  
+  done
+}
+
+encrypt() {
+  echo "Encrypting $filename..."
+  gpg -c $filename
+  if [ -f "$filename.gpg" ]; then
+    echo "Encrypted $filename to $filename.gpg"
+  else
+    echo "Encryption failed, please try again"
+    exit
+  fi
+  shred $filename && rm $filename # Ensure the file is not recoverable
+  echo "Securely deleted $filename"
+}
+
+decrypt() {
+  count=$(ls -1 *.gpg 2>/dev/null | wc -l)
+
+  if [ "$count" -eq 0 ]; then
+    echo "No files available to access"
+    echo "Exiting..."
+    exit
+  elif [ "$count" -gt 1 ]; then
+    echo "Which file would you like to access?"
+    ls -1 *.gpg
+    printf "> "
+    read filename
+    filename="${filename%.*}.gpg"
+    while [ ! -f "$filename" ]; do
+      printf "> "
+      read filename
+      filename="${filename%.*}.gpg"
+    done
+  else
+    filename=$(ls -1 *.gpg 2>/dev/null) 
+  fi
+
+  echo "Decrypting $filename..."
+  decrypted="${filename%.*}"
+  gpg -d $filename > "$decrypted"
+}
+
+gpg_check() {
+  command -v gpg >/dev/null 2>&1 || { echo "Please install gnupg"; exit 1; } # Ensure GPG is available   
+}
+
+copy_to_clipboard() {
+  credential="$1"
+  command -v wl-copy >/dev/null 2>&1 && wl-copy $credential
+  command -v xclip >/dev/null 2>&1 && xclip -i $credential
+}
+
+if [ $# -eq 0 ]; then # Fallback to help if no flag was provided
+  set -- --help
+fi
+
+while [ $# -gt 0 ]; do
+  case "$1" 
+    in [--help][-h])
+      help 
+      break
+      ;; [--new][-n])
+      new
+      break
+      ;; [--read][-r])
+      read_file 
+      break
+      ;; [--append][-a])
+      append
+      ;; [--edit][-e])
+      edit
+      ;; [--delete][-d])
+      delete
+      ;;
+      *)
+      help
+      break
+      ;;
+  esac
+  shift
+done
