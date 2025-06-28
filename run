@@ -262,7 +262,7 @@ decrypt() {
 
   echo "Decrypting $filename..."
   decrypted="${filename%.*}"
-  gpg -d $filename > "$decrypted"
+  gpg --pinentry-mode loopback --decrypt $filename > "$decrypted"
 }
 
 gpg_check() {
