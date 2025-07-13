@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 delim="$(printf '\037')"
 
@@ -192,7 +192,7 @@ select_credential() {
 
   line_number=$(awk -F"$delim" -v sel="$selection" '$1 == sel {print NR; exit}' "$decrypted")
   line=$(sed -n "${line_number}p" $decrypted)
-  readarray -d "$delim" -t fields <<< "$line"
+  readarray -d "$delim" -t fields <<< "$line" # bashism  
 }
 
 change_credential() {
