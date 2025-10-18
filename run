@@ -154,9 +154,7 @@ add_credential() {
     read option 
     case "$option"
       in [1]|"")
-      if [ option == "" ]; then 
-        option=1
-      fi
+      option=1
       printf "Input username\n> "
       read username
       printf "Input password (will not echo)\n> "
